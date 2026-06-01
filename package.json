@@ -1,0 +1,17 @@
+{
+  "name": "chainwatch-ai",
+  "version": "0.3.0",
+  "private": true,
+  "scripts": {
+    "install:backend": "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt",
+    "install:frontend": "npm install --prefix frontend",
+    "install:all": "npm run install:backend && npm run install:frontend",
+    "dev:backend": ".venv/bin/python backend/app/server.py",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev": "concurrently --kill-others \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "build:frontend": "npm run build --prefix frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
