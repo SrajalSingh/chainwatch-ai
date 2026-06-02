@@ -241,6 +241,6 @@ class ChainWatchHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("localhost", PORT), ChainWatchHandler)
-    print(f"ChainWatch AI running at http://localhost:{PORT}")
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), ChainWatchHandler)
+    print(f"ChainWatch AI running at http://0.0.0.0:{PORT}")
     server.serve_forever()
