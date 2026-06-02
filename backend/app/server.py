@@ -21,6 +21,7 @@ from services.etherscan import (
 )
 from services.graph_builder import build_investigation_graph
 from services.risk_engine import analyst_explanation, score_pair, analyze_contract_source
+from services.goplus import check_token_security
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -73,8 +74,18 @@ def analyze(query: str) -> Dict[str, Any]:
             "message": "No token or pair was found. Try a live token contract or symbol that exists on DexScreener.",
         }
 
+    ethereum_pairs = [p for p in result.pairs if p.get("chainId") == "ethereum"]
+    if not ethereum_pairs:
+        return {
+            "query": query,
+            "found": False,
+            "source": result.source,
+            "error": "No Ethereum pairs found",
+            "message": "No matching Ethereum token or pair was found. ChainWatch AI currently only supports Ethereum tokens.",
+        }
+
     pairs = sorted(
-        result.pairs,
+        ethereum_pairs,
         key=lambda item: float(((item.get("liquidity") or {}).get("usd")) or 0),
         reverse=True,
     )
@@ -83,9 +94,11 @@ def analyze(query: str) -> Dict[str, Any]:
 
     # Fetch Etherscan contract info if Ethereum
     contract_intel = None
+    goplus_intel = None
     if primary.get("chainId") == "ethereum":
         token_address = ((primary.get("baseToken") or {}).get("address") or "").strip()
         if token_address:
+            goplus_intel = check_token_security(token_address)
             source_data = get_contract_source(token_address)
             owner_address = get_contract_owner(token_address)
             
@@ -102,7 +115,7 @@ def analyze(query: str) -> Dict[str, Any]:
             }
 
     on_chain = _ethereum_token_intelligence(primary)
-    risk = score_pair(primary, pair_count=len(pairs), contract_intel=contract_intel, on_chain=on_chain)
+    risk = score_pair(primary, pair_count=len(pairs), contract_intel=contract_intel, on_chain=on_chain, goplus_intel=goplus_intel)
 
     return {
         "query": query,
@@ -113,6 +126,7 @@ def analyze(query: str) -> Dict[str, Any]:
         "risk": risk,
         "onChain": on_chain,
         "contractIntel": contract_intel,
+        "goplusIntel": goplus_intel,
         "explanation": analyst_explanation(token_name, risk),
     }
 

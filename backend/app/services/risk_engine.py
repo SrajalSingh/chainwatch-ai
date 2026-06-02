@@ -146,6 +146,7 @@ def score_pair(
     pair_count: int = 0,
     contract_intel: Dict[str, Any] | None = None,
     on_chain: Dict[str, Any] | None = None,
+    goplus_intel: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Score a token pair for fraud/rug-pull risk.
@@ -190,6 +191,34 @@ def score_pair(
     flags: List[str]     = []   # red flags surfaced in UI
     strengths: List[str] = []   # positive signals surfaced in UI
     rug_signals: List[str] = [] # specific rug-pull indicators
+
+    # GoPlus Security Indicators
+    goplus_honeypot = False
+    goplus_buy_tax = 0.0
+    goplus_sell_tax = 0.0
+    goplus_change_balance = False
+    goplus_selfdestruct = False
+    goplus_pausable = False
+    goplus_proxy = False
+    goplus_blacklist = False
+
+    if goplus_intel:
+        goplus_honeypot = goplus_intel.get("is_honeypot") == "1"
+        goplus_change_balance = goplus_intel.get("owner_change_balance") == "1"
+        goplus_selfdestruct = goplus_intel.get("selfdestruct") == "1"
+        goplus_pausable = goplus_intel.get("transfer_pausable") == "1"
+        goplus_proxy = goplus_intel.get("is_proxy") == "1"
+        goplus_blacklist = goplus_intel.get("is_blacklisted") == "1"
+        
+        try:
+            goplus_buy_tax = float(goplus_intel.get("buy_tax", 0.0))
+        except:
+            goplus_buy_tax = 0.0
+            
+        try:
+            goplus_sell_tax = float(goplus_intel.get("sell_tax", 0.0))
+        except:
+            goplus_sell_tax = 0.0
 
     # ═══════════════════════════════════════════════════════
     # 1. TOKEN AGE  (max 25 pts)
@@ -307,9 +336,45 @@ def score_pair(
         rug_ev.append(msg)
         rug_signals.append(msg)
 
+    # GoPlus Honeypot & Tax checks
+    if goplus_intel:
+        if goplus_honeypot:
+            rug_pts += 20  # Max points for rug signals
+            msg = "🚨 GoPlus Honeypot: simulated sell failed. Token is non-sellable."
+            rug_ev.append(msg)
+            rug_signals.append(msg)
+        else:
+            strengths.append("GoPlus trade simulation successfully completed (sellable).")
+
+        if goplus_change_balance:
+            rug_pts += 15
+            msg = "🚨 GoPlus: Owner backdoor detected (can modify user balances directly)."
+            rug_ev.append(msg)
+            rug_signals.append(msg)
+
+        if goplus_buy_tax > 0.40:
+            rug_pts += 10
+            msg = f"🚨 GoPlus: High buy tax ({goplus_buy_tax * 100:.1f}%). Most funds taken on buy."
+            rug_ev.append(msg)
+            rug_signals.append(msg)
+        elif goplus_buy_tax > 0.10:
+            rug_pts += 4
+            rug_ev.append(f"⚠️ GoPlus: Elevated buy tax of {goplus_buy_tax * 100:.1f}%.")
+
+        if goplus_sell_tax > 0.40:
+            rug_pts += 15
+            msg = f"🚨 GoPlus: Extremely high sell tax ({goplus_sell_tax * 100:.1f}%). Sell proceeds blocked."
+            rug_ev.append(msg)
+            rug_signals.append(msg)
+        elif goplus_sell_tax > 0.10:
+            rug_pts += 6
+            rug_ev.append(f"⚠️ GoPlus: Elevated sell tax of {goplus_sell_tax * 100:.1f}%.")
+
     if rug_pts == 0 and not rug_ev:
         rug_ev.append("✅ No obvious rug-pull price patterns detected in recent data.")
 
+    # Bound rug pull signals to max points (20)
+    rug_pts = min(20, rug_pts)
     categories.append(_category("Rug Pull Signals", "🪤", rug_pts, 20, _status(rug_pts, 12, 5), rug_ev))
 
     # ═══════════════════════════════════════════════════════
@@ -468,6 +533,32 @@ def score_pair(
         con_pts += 8
         con_ev.append("⚠️ Contract data is unavailable (non-Ethereum chain or Etherscan API issue). Cannot audit permissions.")
 
+    # GoPlus contract permissions checks
+    if goplus_intel:
+        if goplus_blacklist:
+            con_pts += 5
+            msg = "🚨 GoPlus: Blacklist capability verified in contract."
+            con_ev.append(msg)
+            if msg not in rug_signals:
+                rug_signals.append(msg)
+        
+        if goplus_selfdestruct:
+            con_pts += 6
+            msg = "🚨 GoPlus: Self-destruct backdoor verified (owner can delete contract)."
+            con_ev.append(msg)
+            if msg not in rug_signals:
+                rug_signals.append(msg)
+                
+        if goplus_pausable:
+            con_pts += 3
+            con_ev.append("⚠️ GoPlus: Trading transfers can be paused by owner.")
+            
+        if goplus_proxy:
+            con_pts += 4
+            con_ev.append("⚠️ GoPlus: upgradeable contract proxy pattern detected.")
+
+    # Bound contract security points to max points (15)
+    con_pts = min(15, con_pts)
     categories.append(_category("Contract Security", "🔐", con_pts, 15, _status(con_pts, 10, 4), con_ev))
 
     # ═══════════════════════════════════════════════════════

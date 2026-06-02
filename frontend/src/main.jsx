@@ -13,6 +13,7 @@ import {
   Search,
   ShieldAlert,
   ShieldCheck,
+  TrendingUp,
   Wallet,
 } from "lucide-react";
 import "./styles.css";
@@ -75,7 +76,31 @@ function saveToHistory(payload) {
   return next;
 }
 
+function PriceChart({ token }) {
+  if (!token?.chainId || !token?.pairAddress) {
+    return (
+      <div className="graph graph-empty">
+        <div className="graph-message">
+          <p>No trading pair available to display the price chart.</p>
+        </div>
+      </div>
+    );
+  }
+  const embedUrl = `https://dexscreener.com/${token.chainId}/${token.pairAddress}?embed=1&theme=dark&trades=0`;
+  return (
+    <div className="chart-container">
+      <iframe
+        src={embedUrl}
+        title="Price Chart"
+        className="chart-iframe"
+        allowFullScreen
+      />
+    </div>
+  );
+}
+
 function App() {
+  const [intelTab, setIntelTab] = useState("graph");
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get("q") || "");
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -247,11 +272,35 @@ function App() {
 
           <article className="intel-panel">
             <div className="panel-title">
-              <p>
-                <Network size={17} />
-                Investigation Graph
-              </p>
-              <span>{onChain.available ? "Ethereum live" : loading ? "Scanning..." : "No data"}</span>
+              <div className="panel-tabs">
+                <button
+                  type="button"
+                  className={`panel-tab-btn ${intelTab === "graph" ? "active" : ""}`}
+                  onClick={() => setIntelTab("graph")}
+                >
+                  <Network size={14} />
+                  Wallet Map
+                </button>
+                <button
+                  type="button"
+                  className={`panel-tab-btn ${intelTab === "chart" ? "active" : ""}`}
+                  onClick={() => setIntelTab("chart")}
+                >
+                  <TrendingUp size={14} />
+                  Price Chart
+                </button>
+              </div>
+              <span>
+                {intelTab === "graph"
+                  ? onChain.available
+                    ? "Ethereum live"
+                    : loading
+                    ? "Scanning..."
+                    : "No data"
+                  : token.chainId
+                  ? `${token.chainId.toUpperCase()} live`
+                  : "No market data"}
+              </span>
             </div>
             {loading ? (
               <div className="graph graph-empty">
@@ -262,8 +311,10 @@ function App() {
                   <p>Fetching on-chain data…</p>
                 </div>
               </div>
-            ) : (
+            ) : intelTab === "graph" ? (
               <InvestigationGraph graph={onChain.graph} />
+            ) : (
+              <PriceChart token={token} />
             )}
           </article>
 
@@ -328,6 +379,21 @@ function App() {
         <section className="breakdown-panel">
           <div className="panel-title">
             <p>
+              <Radar size={17} />
+              Honeypot & Tax Audit
+            </p>
+            <span>
+              {analysis?.goplusIntel
+                ? "GoPlus API verified"
+                : "Awaiting scan"}
+            </span>
+          </div>
+          <HoneypotTaxPanel goplusIntel={analysis?.goplusIntel} />
+        </section>
+
+        <section className="breakdown-panel">
+          <div className="panel-title">
+            <p>
               <Wallet size={17} />
               On-Chain Intelligence
             </p>
@@ -352,16 +418,9 @@ function App() {
               danger
             />
           )}
-          <MarketSignals signals={risk.signals || {}} />
-          <SignalPanel
-            icon={<DatabaseZap size={17} />}
-            title="Data Gaps"
-            subtitle="Not yet checked"
-            items={risk.dataGaps || ["Run an analysis to see what still needs explorer/RPC data."]}
-            muted
-          />
           <RelatedPairs pairs={analysis?.relatedPairs || []} />
         </section>
+        <AboutSection />
       </section>
     </main>
   );
@@ -495,6 +554,35 @@ const EDGE_LEGEND = [
 
 function InvestigationGraph({ graph }) {
   const [hoveredId, setHoveredId] = useState(null);
+  const svgRef = React.useRef(null);
+
+  // Use a fixed wide viewBox — always fills the panel regardless of aspect ratio
+  const VW = 800;
+  const VH = 400;
+  const PAD = 60; // px padding inside viewBox
+
+  // Map backend 0–100 coords → viewBox pixel space
+  const mapX = (x) => PAD + (x / 100) * (VW - 2 * PAD);
+  const mapY = (y) => PAD + (y / 100) * (VH - 2 * PAD);
+
+  // Node positions in SVG coordinates
+  const [positions, setPositions] = useState({});
+  const [zoom, setZoom] = useState({ x: 0, y: 0, scale: 1 });
+  const [draggingNodeId, setDraggingNodeId] = useState(null);
+  const [panning, setPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const dragStartPos = React.useRef({ x: 0, y: 0 });
+
+  // Initialize/reset positions when graph changes
+  useEffect(() => {
+    if (graph?.nodes) {
+      const initial = {};
+      graph.nodes.forEach((node) => {
+        initial[node.id] = { x: mapX(node.x), y: mapY(node.y) };
+      });
+      setPositions(initial);
+    }
+  }, [graph]);
 
   if (!graph?.available || !graph.nodes?.length) {
     return (
@@ -505,15 +593,6 @@ function InvestigationGraph({ graph }) {
       </div>
     );
   }
-
-  // Use a fixed wide viewBox — always fills the panel regardless of aspect ratio
-  const VW = 800;
-  const VH = 400;
-  const PAD = 60; // px padding inside viewBox
-
-  // Map backend 0–100 coords → viewBox pixel space
-  const mapX = (x) => PAD + (x / 100) * (VW - 2 * PAD);
-  const mapY = (y) => PAD + (y / 100) * (VH - 2 * PAD);
 
   const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]));
 
@@ -533,166 +612,287 @@ function InvestigationGraph({ graph }) {
   const dimNode = (node) =>
     hoveredId && !connectedIds.has(node.id);
 
+  // SVG coordinate conversion helper
+  const getSVGCoords = (clientX, clientY) => {
+    if (!svgRef.current) return { x: 0, y: 0 };
+    const rect = svgRef.current.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * VW;
+    const y = ((clientY - rect.top) / rect.height) * VH;
+    return { x, y };
+  };
+
+  // Node drag handlers
+  const handleNodeMouseDown = (nodeId, e) => {
+    e.stopPropagation();
+    setDraggingNodeId(nodeId);
+    dragStartPos.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handleNodeMouseUp = (nodeId, e) => {
+    e.stopPropagation();
+    const dx = Math.abs(e.clientX - dragStartPos.current.x);
+    const dy = Math.abs(e.clientY - dragStartPos.current.y);
+    if (dx < 5 && dy < 5) {
+      window.open(`https://etherscan.io/address/${nodeId}`, "_blank", "noreferrer");
+    }
+  };
+
+  // Canvas pan & zoom handlers
+  const handleCanvasMouseDown = (e) => {
+    if (draggingNodeId) return;
+    setPanning(true);
+    setPanStart({ x: e.clientX - zoom.x, y: e.clientY - zoom.y });
+  };
+
+  const handleMouseMove = (e) => {
+    if (draggingNodeId) {
+      const coords = getSVGCoords(e.clientX, e.clientY);
+      const x = (coords.x - zoom.x) / zoom.scale;
+      const y = (coords.y - zoom.y) / zoom.scale;
+      setPositions((prev) => ({
+        ...prev,
+        [draggingNodeId]: { x, y },
+      }));
+    } else if (panning) {
+      setZoom((prev) => ({
+        ...prev,
+        x: e.clientX - panStart.x,
+        y: e.clientY - panStart.y,
+      }));
+    }
+  };
+
+  const handleMouseUpOrLeave = () => {
+    setDraggingNodeId(null);
+    setPanning(false);
+  };
+
+  const handleWheel = (e) => {
+    e.preventDefault();
+    const zoomFactor = 1.1;
+    const scaleChange = e.deltaY < 0 ? zoomFactor : 1 / zoomFactor;
+    const nextScale = Math.max(0.5, Math.min(4, zoom.scale * scaleChange));
+    
+    const coords = getSVGCoords(e.clientX, e.clientY);
+    setZoom((prev) => {
+      const dx = coords.x - prev.x;
+      const dy = coords.y - prev.y;
+      return {
+        x: coords.x - dx * (nextScale / prev.scale),
+        y: coords.y - dy * (nextScale / prev.scale),
+        scale: nextScale,
+      };
+    });
+  };
+
+  const handleReset = () => {
+    setZoom({ x: 0, y: 0, scale: 1 });
+    if (graph?.nodes) {
+      const initial = {};
+      graph.nodes.forEach((node) => {
+        initial[node.id] = { x: mapX(node.x), y: mapY(node.y) };
+      });
+      setPositions(initial);
+    }
+  };
+
   return (
-    <div className="graph">
-      <svg
-        viewBox={`0 0 ${VW} ${VH}`}
-        preserveAspectRatio="xMidYMid meet"
-        className="graph-svg"
-        aria-label="Wallet investigation network"
-      >
-        <defs>
-          {Object.entries(EDGE_COLORS).map(([kind, color]) => (
-            <marker
-              key={kind}
-              id={`arrow-${kind}`}
-              viewBox="0 0 10 10"
-              refX="9"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
-            </marker>
-          ))}
-        </defs>
+    <div className="graph-container-wrap">
+      <div className="graph-controls">
+        <button type="button" className="graph-btn" onClick={handleReset}>
+          Reset View
+        </button>
+      </div>
+      <div className="graph">
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${VW} ${VH}`}
+          preserveAspectRatio="xMidYMid meet"
+          className={`graph-svg ${draggingNodeId ? "dragging" : ""}`}
+          aria-label="Wallet investigation network"
+          onMouseDown={handleCanvasMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUpOrLeave}
+          onMouseLeave={handleMouseUpOrLeave}
+          onWheel={handleWheel}
+        >
+          <defs>
+            {Object.entries(EDGE_COLORS).map(([kind, color]) => (
+              <marker
+                key={kind}
+                id={`arrow-${kind}`}
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+              </marker>
+            ))}
+          </defs>
 
-        {/* Edges */}
-        {graph.edges.map((edge) => {
-          const src = nodeMap.get(edge.source);
-          const tgt = nodeMap.get(edge.target);
-          if (!src || !tgt) return null;
-          const color = EDGE_COLORS[edge.kind] || "rgba(145,163,173,0.5)";
-          const x1 = mapX(src.x);
-          const y1 = mapY(src.y);
-          const x2 = mapX(tgt.x);
-          const y2 = mapY(tgt.y);
-          const dx = x2 - x1;
-          const dy = y2 - y1;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          const srcR = src.type === "token" ? 28 : 22;
-          const tgtR = tgt.type === "token" ? 28 : 22;
-          const sx = x1 + (dx / dist) * srcR;
-          const sy = y1 + (dy / dist) * srcR;
-          const ex = x2 - (dx / dist) * (tgtR + 4);
-          const ey = y2 - (dy / dist) * (tgtR + 4);
-          const faded = dimEdge(edge);
-          return (
-            <g key={`${edge.source}-${edge.target}-${edge.kind}`} opacity={faded ? 0.08 : 0.9} style={{ transition: "opacity 0.2s" }}>
-              <line
-                x1={sx} y1={sy} x2={ex} y2={ey}
-                stroke={color}
-                strokeWidth={hoveredId && !faded ? 2.5 : 1.5}
-                markerEnd={`url(#arrow-${edge.kind})`}
-              />
-              {edge.count > 1 && (
-                <text
-                  x={(sx + ex) / 2}
-                  y={(sy + ey) / 2 - 8}
-                  fontSize="11"
-                  fill={color}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fontWeight="700"
+          {/* Pan/Zoom wrapper */}
+          <g transform={`translate(${zoom.x}, ${zoom.y}) scale(${zoom.scale})`}>
+            {/* Edges */}
+            {graph.edges.map((edge) => {
+              const srcPos = positions[edge.source];
+              const tgtPos = positions[edge.target];
+              const src = graph.nodes.find(n => n.id === edge.source);
+              const tgt = graph.nodes.find(n => n.id === edge.target);
+              if (!srcPos || !tgtPos || !src || !tgt) return null;
+              
+              const color = EDGE_COLORS[edge.kind] || "rgba(145,163,173,0.5)";
+              const x1 = srcPos.x;
+              const y1 = srcPos.y;
+              const x2 = tgtPos.x;
+              const y2 = tgtPos.y;
+              
+              const dx = x2 - x1;
+              const dy = y2 - y1;
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+              const srcR = src.type === "token" ? 28 : 22;
+              const tgtR = tgt.type === "token" ? 28 : 22;
+              
+              const sx = x1 + (dx / dist) * srcR;
+              const sy = y1 + (dy / dist) * srcR;
+              const ex = x2 - (dx / dist) * (tgtR + 4);
+              const ey = y2 - (dy / dist) * (tgtR + 4);
+              const faded = dimEdge(edge);
+              return (
+                <g key={`${edge.source}-${edge.target}-${edge.kind}`} opacity={faded ? 0.08 : 0.9} style={{ transition: "opacity 0.2s" }}>
+                  <line
+                    x1={sx} y1={sy} x2={ex} y2={ey}
+                    stroke={color}
+                    strokeWidth={hoveredId && !faded ? 2.5 : 1.5}
+                    markerEnd={`url(#arrow-${edge.kind})`}
+                  />
+                  {edge.count > 1 && (
+                    <text
+                      x={(sx + ex) / 2}
+                      y={(sy + ey) / 2 - 8}
+                      fontSize="11"
+                      fill={color}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fontWeight="700"
+                    >
+                      ×{edge.count}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+
+            {/* Nodes */}
+            {graph.nodes.map((node) => {
+              const pos = positions[node.id];
+              if (!pos) return null;
+              const cx = pos.x;
+              const cy = pos.y;
+              const fill = NODE_FILL[node.type] || "#4fe0b5";
+              const textColor = NODE_TEXT_COLOR[node.type] || "#04100d";
+              const isToken = node.type === "token";
+              const r = isToken ? 28 : 22;
+              const faded = dimNode(node);
+              const hovered = hoveredId === node.id;
+              return (
+                <g
+                  key={node.id}
+                  style={{ cursor: "pointer", transition: "opacity 0.2s" }}
+                  opacity={faded ? 0.15 : 1}
+                  onMouseEnter={() => setHoveredId(node.id)}
+                  onMouseLeave={() => setHoveredId(null)}
+                  onMouseDown={(e) => handleNodeMouseDown(node.id, e)}
+                  onMouseUp={(e) => handleNodeMouseUp(node.id, e)}
                 >
-                  ×{edge.count}
-                </text>
-              )}
-            </g>
-          );
-        })}
+                  <title>{node.id}</title>
+                  {/* Glow ring on hover */}
+                  {hovered && (
+                    <circle
+                      cx={cx} cy={cy} r={r + 8}
+                      fill="none"
+                      stroke={fill}
+                      strokeWidth="2"
+                      opacity="0.4"
+                    />
+                  )}
+                  <circle
+                    cx={cx} cy={cy} r={r}
+                    fill={fill}
+                    stroke={hovered ? "#fff" : "transparent"}
+                    strokeWidth="1.5"
+                  />
+                  <text
+                    x={cx} y={cy - (isToken ? 4 : 3)}
+                    fontSize={isToken ? "11" : "9"}
+                    fontWeight="800"
+                    fill={textColor}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    style={{ pointerEvents: "none", userSelect: "none" }}
+                  >
+                    {node.label}
+                  </text>
+                  <text
+                    x={cx} y={cy + (isToken ? 9 : 8)}
+                    fontSize="7"
+                    fill={textColor}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    opacity="0.7"
+                    style={{ pointerEvents: "none", userSelect: "none" }}
+                  >
+                    {node.type.toUpperCase()}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+        </svg>
 
-        {/* Nodes */}
-        {graph.nodes.map((node) => {
-          const cx = mapX(node.x);
-          const cy = mapY(node.y);
-          const fill = NODE_FILL[node.type] || "#4fe0b5";
-          const textColor = NODE_TEXT_COLOR[node.type] || "#04100d";
-          const isToken = node.type === "token";
-          const r = isToken ? 28 : 22;
-          const faded = dimNode(node);
-          const hovered = hoveredId === node.id;
-          return (
-            <g
-              key={node.id}
-              style={{ cursor: "pointer", transition: "opacity 0.2s" }}
-              opacity={faded ? 0.15 : 1}
-              onMouseEnter={() => setHoveredId(node.id)}
-              onMouseLeave={() => setHoveredId(null)}
-            >
-              <title>{node.id}</title>
-              {/* Glow ring on hover */}
-              {hovered && (
-                <circle
-                  cx={cx} cy={cy} r={r + 8}
-                  fill="none"
-                  stroke={fill}
-                  strokeWidth="2"
-                  opacity="0.4"
-                />
-              )}
-              <circle
-                cx={cx} cy={cy} r={r}
-                fill={fill}
-                stroke={hovered ? "#fff" : "transparent"}
-                strokeWidth="1.5"
-              />
-              <text
-                x={cx} y={cy - (isToken ? 4 : 3)}
-                fontSize={isToken ? "11" : "9"}
-                fontWeight="800"
-                fill={textColor}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                style={{ pointerEvents: "none", userSelect: "none" }}
-              >
-                {node.label}
-              </text>
-              <text
-                x={cx} y={cy + (isToken ? 9 : 8)}
-                fontSize="7"
-                fill={textColor}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                opacity="0.7"
-                style={{ pointerEvents: "none", userSelect: "none" }}
-              >
-                {node.type.toUpperCase()}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-
-      {/* Legend */}
-      <div className="graph-legend">
-        <div className="graph-legend-group">
-          {LEGEND_ITEMS.map((item) => (
-            <div key={item.label} className="graph-legend-item">
-              <span className="graph-legend-dot" style={{ background: item.color }} />
-              {item.label}
-            </div>
-          ))}
-        </div>
-        <div className="graph-legend-group">
-          {EDGE_LEGEND.map((item) => (
-            <div key={item.label} className="graph-legend-item">
-              <span className="graph-legend-line" style={{ background: item.color }} />
-              {item.label}
-            </div>
-          ))}
-        </div>
-        {graph.summary?.createdAt && (
-          <div className="graph-legend-item" style={{ marginLeft: "auto", color: "var(--muted)", fontSize: "11px" }}>
-            Deployed {new Date(Number(graph.summary.createdAt) * 1000).toLocaleDateString()}
+        {/* Legend */}
+        <div className="graph-legend">
+          <div className="graph-legend-group">
+            {LEGEND_ITEMS.map((item) => (
+              <div key={item.label} className="graph-legend-item">
+                <span className="graph-legend-dot" style={{ background: item.color }} />
+                {item.label}
+              </div>
+            ))}
           </div>
-        )}
+          <div className="graph-legend-group">
+            {EDGE_LEGEND.map((item) => (
+              <div key={item.label} className="graph-legend-item">
+                <span className="graph-legend-line" style={{ background: item.color }} />
+                {item.label}
+              </div>
+            ))}
+          </div>
+          {graph.summary?.createdAt && (
+            <div className="graph-legend-item" style={{ marginLeft: "auto", color: "var(--muted)", fontSize: "11px" }}>
+              Deployed {new Date(Number(graph.summary.createdAt) * 1000).toLocaleDateString()}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="graph-guide">
+        <h4>🔍 Understanding the Wallet Map</h4>
+        <p>
+          This diagram traces transaction relationships to spot potential developer collusion or pre-mine token dumping:
+        </p>
+        <ul>
+          <li><strong>Creator (Red Node):</strong> The developer wallet that launched the token. Pay attention to who they sent funds or tokens to.</li>
+          <li><strong>Token (Blue Node):</strong> The smart contract address of this cryptocurrency.</li>
+          <li><strong>Counterparty (Green Nodes):</strong> Other wallets that interacted heavily with the developer (e.g. early buyers, seed funding source, or hidden developer wallets).</li>
+          <li><strong>Transactions (Lines):</strong> Red lines are deployment contract creations. Blue lines are native ETH transfers. Green lines are Token transfers. Look for developers sending massive token volumes to counterparties.</li>
+          <li><strong>Interact:</strong> Zoom with scroll wheel. Click & drag the background to pan around. Drag individual nodes to clean up the map. Click a node to open its Etherscan explorer.</li>
+        </ul>
       </div>
     </div>
   );
 }
-
 
 function Breakdown({ categories }) {
   if (!categories.length) {
@@ -1027,6 +1227,215 @@ function ContractAuditPanel({ contractIntel }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function HoneypotTaxPanel({ goplusIntel }) {
+  if (!goplusIntel) {
+    return (
+      <div className="empty-state">
+        GoPlus Security audit is not available for this query. Ensure the token address is on Ethereum Mainnet.
+      </div>
+    );
+  }
+
+  // Parse fields safely
+  const isHoneypot = goplusIntel.is_honeypot === "1";
+  const buyTax = parseFloat(goplusIntel.buy_tax || "0");
+  const sellTax = parseFloat(goplusIntel.sell_tax || "0");
+  const changeBalance = goplusIntel.owner_change_balance === "1";
+  const selfdestruct = goplusIntel.selfdestruct === "1";
+  const transferPausable = goplusIntel.transfer_pausable === "1";
+  const isProxy = goplusIntel.is_proxy === "1";
+  const isBlacklisted = goplusIntel.is_blacklisted === "1";
+
+  // Tax checks
+  const highBuyTax = buyTax > 0.10;
+  const criticalBuyTax = buyTax > 0.40;
+  const highSellTax = sellTax > 0.10;
+  const criticalSellTax = sellTax > 0.40;
+
+  return (
+    <div className="audit-layout">
+      <div className="audit-meta">
+        <div className="pair">
+          <span>Honeypot Status</span>
+          <strong style={{ color: isHoneypot ? "var(--red)" : "var(--accent)" }}>
+            {isHoneypot ? "⚠️ HONEYPOT DETECTED" : "✅ SAFE (Simulation Passed)"}
+          </strong>
+        </div>
+        <div className="pair">
+          <span>Buy Tax</span>
+          <strong style={{ color: criticalBuyTax ? "var(--red)" : highBuyTax ? "var(--amber)" : "var(--accent)" }}>
+            {(buyTax * 100).toFixed(1)}%
+          </strong>
+        </div>
+        <div className="pair">
+          <span>Sell Tax</span>
+          <strong style={{ color: criticalSellTax ? "var(--red)" : highSellTax ? "var(--amber)" : "var(--accent)" }}>
+            {(sellTax * 100).toFixed(1)}%
+          </strong>
+        </div>
+      </div>
+
+      <div className="audit-grid">
+        <div className={`audit-card-status ${isHoneypot ? "fail" : "pass"}`}>
+          <div className="badge-icon">
+            {isHoneypot ? (
+              <ShieldAlert size={18} color="var(--red)" />
+            ) : (
+              <ShieldCheck size={18} color="var(--accent)" />
+            )}
+          </div>
+          <div>
+            <strong>Honeypot Check</strong>
+            <p>
+              {isHoneypot
+                ? "Simulated sell transaction failed. Users cannot sell tokens once bought."
+                : "Simulation successfully bought and sold tokens. Standard trading allowed."}
+            </p>
+          </div>
+        </div>
+
+        <div className={`audit-card-status ${changeBalance ? "fail" : "pass"}`}>
+          <div className="badge-icon">
+            {changeBalance ? (
+              <ShieldAlert size={18} color="var(--red)" />
+            ) : (
+              <ShieldCheck size={18} color="var(--accent)" />
+            )}
+          </div>
+          <div>
+            <strong>Balance Backdoor</strong>
+            <p>
+              {changeBalance
+                ? "Owner can unilaterally modify user balances (owner_change_balance)."
+                : "No owner balance modification backdoors detected."}
+            </p>
+          </div>
+        </div>
+
+        <div className={`audit-card-status ${selfdestruct ? "fail" : "pass"}`}>
+          <div className="badge-icon">
+            {selfdestruct ? (
+              <ShieldAlert size={18} color="var(--red)" />
+            ) : (
+              <ShieldCheck size={18} color="var(--accent)" />
+            )}
+          </div>
+          <div>
+            <strong>Self-Destruct Option</strong>
+            <p>
+              {selfdestruct
+                ? "Contract contains self-destruct instructions allowing the owner to destroy bytecode."
+                : "No self-destruct bytecode found in contract."}
+            </p>
+          </div>
+        </div>
+
+        <div className={`audit-card-status ${transferPausable ? "warn" : "pass"}`}>
+          <div className="badge-icon">
+            {transferPausable ? (
+              <AlertTriangle size={18} color="var(--amber)" />
+            ) : (
+              <ShieldCheck size={18} color="var(--accent)" />
+            )}
+          </div>
+          <div>
+            <strong>Trading Pause Capability</strong>
+            <p>
+              {transferPausable
+                ? "Owner can pause transfers at any time, halting user buys or sells."
+                : "No standard pause mechanism found on token transfers."}
+            </p>
+          </div>
+        </div>
+
+        <div className={`audit-card-status ${isProxy ? "warn" : "pass"}`}>
+          <div className="badge-icon">
+            {isProxy ? (
+              <AlertTriangle size={18} color="var(--amber)" />
+            ) : (
+              <ShieldCheck size={18} color="var(--accent)" />
+            )}
+          </div>
+          <div>
+            <strong>Contract Proxy</strong>
+            <p>
+              {isProxy
+                ? "Upgradeable proxy pattern detected. Contract execution code can change post-launch."
+                : "No proxy pattern found. Contract bytecode is immutable."}
+            </p>
+          </div>
+        </div>
+
+        <div className={`audit-card-status ${isBlacklisted ? "fail" : "pass"}`}>
+          <div className="badge-icon">
+            {isBlacklisted ? (
+              <ShieldAlert size={18} color="var(--red)" />
+            ) : (
+              <ShieldCheck size={18} color="var(--accent)" />
+            )}
+          </div>
+          <div>
+            <strong>Wallet Blacklist</strong>
+            <p>
+              {isBlacklisted
+                ? "Address blacklisting functions detected. Owner can freeze individual user wallets."
+                : "No blacklist or freeze capabilities found in code."}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AboutSection() {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="breakdown-panel" style={{ marginTop: "24px" }}>
+      <div 
+        className="panel-title" 
+        style={{ cursor: "pointer", userSelect: "none" }}
+        onClick={() => setOpen(!open)}
+      >
+        <p>
+          <Clock size={17} />
+          About ChainWatch AI & Help Guide
+        </p>
+        <span style={{ color: "var(--accent)", fontWeight: 800 }}>
+          {open ? "Collapse ▲" : "Expand ▼"}
+        </span>
+      </div>
+      {open && (
+        <div style={{ padding: "12px 0 0", color: "var(--muted)", fontSize: "0.85rem", lineHeight: 1.6 }}>
+          <p style={{ margin: "0 0 16px" }}>
+            <strong>ChainWatch AI</strong> is an automated smart contract security scanner and risk assessment terminal. It queries Etherscan and GoPlus APIs to simulate trades, check for developer backdoors, and analyze transfer history to keep you safe from rug-pulls.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px" }}>
+            <div>
+              <h4 style={{ margin: "0 0 8px", color: "var(--text)", fontSize: "0.9rem" }}>🛡️ Risk Score Model</h4>
+              <p style={{ margin: 0 }}>
+                Tokens are scored out of 100 points. Brand-new tokens, unverified contracts, large owner supply shares, and thin liquidity pools generate risk points. Keep your score under 25 for safe entries.
+              </p>
+            </div>
+            <div>
+              <h4 style={{ margin: "0 0 8px", color: "var(--text)", fontSize: "0.9rem" }}>🍯 Honeypot & Tax Checks</h4>
+              <p style={{ margin: 0 }}>
+                Our Honeypot simulation tests actual token transactions in a sandbox. If simulated buys/sells fail, or if buy/sell taxes are set abnormally high (over 10%), warnings are triggered.
+              </p>
+            </div>
+            <div>
+              <h4 style={{ margin: "0 0 8px", color: "var(--text)", fontSize: "0.9rem" }}>⛓️ On-Chain Developer Audit</h4>
+              <p style={{ margin: 0 }}>
+                Tracks the creator wallet address to verify developer supply share, detect if they are launching multiple tokens in short succession, and map who receives early developer tokens.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
