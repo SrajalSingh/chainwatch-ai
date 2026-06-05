@@ -9,8 +9,12 @@ def check_token_security(token_address: str, chain_id: str = "1") -> Dict[str, A
     """
     Fetch token security data from the GoPlus Security API.
     Chain ID defaults to '1' for Ethereum.
+    If chain_id is 'solana', it uses the Solana endpoint.
     """
-    url = GOPLUS_URL.format(chain_id=chain_id)
+    if chain_id == "solana":
+        url = "https://api.gopluslabs.io/api/v1/solana/token_security"
+    else:
+        url = GOPLUS_URL.format(chain_id=chain_id)
     try:
         response = httpx.get(
             url,

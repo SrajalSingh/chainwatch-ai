@@ -63,6 +63,22 @@ def _pair_to_summary(pair: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+MAP_CHAIN_TO_GOPLUS = {
+    "ethereum": "1",
+    "bsc": "56",
+    "arbitrum": "42161",
+    "polygon": "137",
+    "optimism": "10",
+    "base": "8453",
+    "avalanche": "43114",
+    "linea": "59144",
+    "zksync": "324",
+    "fantom": "250",
+    "gnosis": "100",
+    "solana": "solana",
+}
+
+
 def analyze(query: str) -> Dict[str, Any]:
     result = lookup_token_or_pair(query)
     if not result.pairs:
@@ -74,31 +90,29 @@ def analyze(query: str) -> Dict[str, Any]:
             "message": "No token or pair was found. Try a live token contract or symbol that exists on DexScreener.",
         }
 
-    ethereum_pairs = [p for p in result.pairs if p.get("chainId") == "ethereum"]
-    if not ethereum_pairs:
-        return {
-            "query": query,
-            "found": False,
-            "source": result.source,
-            "error": "No Ethereum pairs found",
-            "message": "No matching Ethereum token or pair was found. ChainWatch AI currently only supports Ethereum tokens.",
-        }
-
+    # Support all chains, sorted by liquidity
     pairs = sorted(
-        ethereum_pairs,
+        result.pairs,
         key=lambda item: float(((item.get("liquidity") or {}).get("usd")) or 0),
         reverse=True,
     )
     primary = pairs[0]
     token_name = (primary.get("baseToken") or {}).get("name") or "This token"
+    chain_id = primary.get("chainId")
 
-    # Fetch Etherscan contract info if Ethereum
+    # Fetch multi-chain security details and Etherscan info if Ethereum
     contract_intel = None
     goplus_intel = None
-    if primary.get("chainId") == "ethereum":
-        token_address = ((primary.get("baseToken") or {}).get("address") or "").strip()
-        if token_address:
-            goplus_intel = check_token_security(token_address)
+    token_address = ((primary.get("baseToken") or {}).get("address") or "").strip()
+    
+    if token_address:
+        # Check security on the matched chain using GoPlus
+        goplus_chain = MAP_CHAIN_TO_GOPLUS.get(chain_id)
+        if goplus_chain:
+            goplus_intel = check_token_security(token_address, chain_id=goplus_chain)
+        
+        # Contract-level static analysis is currently Ethereum-only (Etherscan V2 free-tier)
+        if chain_id == "ethereum":
             source_data = get_contract_source(token_address)
             owner_address = get_contract_owner(token_address)
             
