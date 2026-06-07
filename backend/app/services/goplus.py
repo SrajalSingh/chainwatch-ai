@@ -27,12 +27,14 @@ def check_token_security(token_address: str, chain_id: str = "1") -> Dict[str, A
         
         if payload.get("code") == 1:
             result_dict = payload.get("result") or {}
-            # Search case-insensitively for the matching address
+            # Solana addresses are base58 and case-sensitive; EVM addresses are hex and case-insensitive
+            is_solana = chain_id == "solana"
             for addr, data in result_dict.items():
-                if addr.lower() == token_address.lower():
+                match = (addr == token_address) if is_solana else (addr.lower() == token_address.lower())
+                if match:
                     return data
-            
-            # If not found by matching, return the first key's data if available
+
+            # If not found by exact match, return the first key's data if available
             if result_dict:
                 return next(iter(result_dict.values()))
     except Exception as e:

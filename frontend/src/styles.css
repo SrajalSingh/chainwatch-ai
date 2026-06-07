@@ -475,6 +475,12 @@ dd {
   color: #c7d5d2;
 }
 
+.danger-list li {
+  border-left-color: var(--red);
+  background: rgba(255, 94, 104, 0.06);
+  color: #ffd0d3;
+}
+
 .signal-grid,
 .pairs-list {
   display: grid;

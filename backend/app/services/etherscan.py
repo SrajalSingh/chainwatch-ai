@@ -128,7 +128,7 @@ def get_contract_owner(contract_address: str) -> Optional[str]:
             "module": "proxy",
             "action": "eth_call",
             "to": contract_address,
-            "data": "0x8da80503",
+            "data": "0x8da5cb5b",
             "tag": "latest",
         }
     )

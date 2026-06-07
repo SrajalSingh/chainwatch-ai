@@ -1233,8 +1233,8 @@ function ContractAuditPanel({ contractIntel }) {
 function HoneypotTaxPanel({ goplusIntel }) {
   if (!goplusIntel) {
     return (
-      <div className="empty-state">
-        GoPlus Security audit is not available for this query. Ensure the token address is on Ethereum Mainnet.
+        <div className="empty-state">
+        GoPlus Security audit is not available for this result. The token may be on an unsupported chain, or GoPlus returned no data for this address.
       </div>
     );
   }

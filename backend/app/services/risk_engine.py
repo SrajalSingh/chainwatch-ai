@@ -97,9 +97,11 @@ def analyze_contract_source(source_code: str | None, owner_address: str | None) 
         "blacklist", "isblacklisted", "blacklists", "freezefunds", "freezewallet", "_blacklisted"
     ])
 
+    # Only flag external/public mint capability — internal _mint is standard in all ERC-20s
+    # and safe by itself. We look for public/external "mint" or explicit "externalmint" patterns.
     has_mint = any(kw in code_lower for kw in [
-        "function mint", "function _mint", "externalmint"
-    ])
+        "function mint(", "function mint (", "externalmint"
+    ]) and "function _mint" not in code_lower.replace("function mint", "")
 
     has_pause = any(kw in code_lower for kw in [
         "function pause", "function setpaused", "whennotpaused", "_paused"
